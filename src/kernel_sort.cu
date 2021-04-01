@@ -9,10 +9,9 @@
 #include <math.h>
 
 #include "sortedArray.h"
-# define NTPB 16
-# define NB 5
+
 # define nb_arrays 5
-# define size_of_array 16
+# define size_of_array 1024
 
 // Function that catches the error
 void testCUDA(cudaError_t error, const char *file, int line) {
@@ -23,6 +22,20 @@ void testCUDA(cudaError_t error, const char *file, int line) {
 	}
 }
 #define testCUDA(error) (testCUDA(error, __FILE__ , __LINE__))
+
+// Helper function to print results
+void printSortResults(int *M, int* T, const int arraySizeT, const int nb_arrays_to_srt) {
+	int i, j;
+
+	for (i = 0; i < nb_arrays_to_srt; i++)
+	{
+		printf("Tab :");
+		printArray(&(T[i*arraySizeT]), arraySizeT);
+		printf("Sorted Tab :");
+		printArray(&(M[i*arraySizeT]), arraySizeT);
+		printf("\n");
+	}
+}
 
 __device__ void diagonalKernel(int effective_idx, int idx, int *M, int* A, int* B, const int sizeA, const int sizeB, const int sizeM) {
 	
@@ -71,103 +84,58 @@ __device__ void diagonalKernel(int effective_idx, int idx, int *M, int* A, int* 
 		}
 	}
 }
+__global__ void batchMergeSortKernel(int *M, int* T, const int sizeT, const int sizeM, const int nb_steps) {
+	// Number of steps:
+	extern __shared__ int local_M[];
 
-
-
-__global__ void mergeSortKernel(int *M, int* T, const int sizeT, const int sizeM, const int i) {
-	int idx = threadIdx.x;
-    // size of each sorted tab within a couple to sort
-    int effective_tab_size = pow(2, i); 
-    // total number of tabs to sort
-    int nb_tabs = sizeT/effective_tab_size;
-    // shared memory to contain result
-    __shared__ int local_M[NTPB];
-	int begin_index_of_A = (idx / (2*effective_tab_size)) * (2*effective_tab_size);
-	int begin_index_of_B = (idx / (2*effective_tab_size)) * (2*effective_tab_size) + effective_tab_size;
-    int *effective_A = &T[begin_index_of_A];
-    int *effective_B = &T[begin_index_of_B];
-	
-	while (idx < sizeM) {
-		diagonalKernel(begin_index_of_A + idx %(2*effective_tab_size), idx %(2*effective_tab_size), local_M, effective_A, effective_B, effective_tab_size, effective_tab_size, 2*effective_tab_size);
-		idx += blockDim.x;
-	}
-    // copy sorted effecive_M in the global M
-	M[begin_index_of_A + idx %(2*effective_tab_size)] = local_M[begin_index_of_A + idx %(2*effective_tab_size)]; 
-}
-
-double parallelMergeSort(int *M, int *T, const int sizeT) {
-	int *gpuT(0), *gpuM(0);
-	int sizeM = sizeT;
-	float ExecutionTime;
-	cudaError_t cudaStatus;
-	cudaEvent_t start, stop;			// GPU timer instructions
-
-	// Allocate GPU buffers for input array T , and sorted array M
-	testCUDA(cudaMalloc(&gpuT, sizeT * sizeof(int)));
-	testCUDA(cudaMalloc(&gpuM, sizeM * sizeof(int)));
-
-	// Copy our array T from host memory to GPU buffers.
-	testCUDA(cudaMemcpy(gpuT, T, sizeT * sizeof(int), cudaMemcpyHostToDevice));
-
-
-	// GPU Timer events
-	cudaEventCreate(&start);
-	cudaEventCreate(&stop);
-	cudaEventRecord(start, 0);
-
-	// One block = batch size of 1 for now
-    // get number of sorting steps to perform
-    int nb_steps = log2(sizeM);
-	int i=0;
-	int *intemediate = &gpuT[0];
-    for (i=0; i<nb_steps; i++){
-        mergeSortKernel <<<1, NTPB>>> (gpuM, intemediate, sizeT, sizeM, i);
-		intemediate = &gpuM[0];
-    }
-	
-	// GPU Timer Instructions
-	cudaEventRecord(stop, 0);
-	cudaEventSynchronize(stop);
-	cudaEventElapsedTime(&ExecutionTime, start, stop);
-	cudaEventDestroy(start);
-	cudaEventDestroy(stop);
-	// Copy M from GPU buffer to host memory.
-	
-	testCUDA(cudaMemcpy(M, gpuM, sizeM * sizeof(int), cudaMemcpyDeviceToHost));
-	// Free GPU memory !
-	cudaFree(gpuT);
-	cudaFree(gpuM);
-
-	return (double) ExecutionTime;
-}
-
-__global__ void batchMergeSortKernel(int *M, int* T, const int sizeT, const int sizeM, const int i) {
-	int idx = threadIdx.x;
+	int idx, relative_idx, begin_index_of_A, begin_index_of_B;
+	int *effective_A, *effective_B;
 	int tidx = threadIdx.x + blockIdx.x*blockDim.x;
 	int bidx = blockIdx.x;
-    // size of each sorted tab within a couple to sort
-    int effective_tab_size = pow(2, i); 
-    // total number of tabs to sort
-    int nb_tabs = sizeT/effective_tab_size;
-    // shared memory to contain result
-    __shared__ int local_M[NTPB];
-	int begin_index_of_A = (idx / (2*effective_tab_size)) * (2*effective_tab_size);
-	int begin_index_of_B = (idx / (2*effective_tab_size)) * (2*effective_tab_size) + effective_tab_size;
-    int *effective_A = &T[bidx*sizeT + begin_index_of_A];
-    int *effective_B = &T[bidx*sizeT + begin_index_of_B];
-	
-	diagonalKernel(begin_index_of_A + idx %(2*effective_tab_size), idx %(2*effective_tab_size), local_M, effective_A, effective_B, effective_tab_size, effective_tab_size, 2*effective_tab_size);
+	int *temp = &T[bidx*sizeT];
 
-    // copy sorted effecive_M in the global M
-	M[bidx*sizeT + begin_index_of_A + idx %(2*effective_tab_size)] = local_M[begin_index_of_A + idx %(2*effective_tab_size)]; 
+	for (int i = 0; i < nb_steps; i++) {
+		idx = threadIdx.x;
+		int effective_tab_size = powf(2, i);
+		
+		while (idx < sizeM) {
+			begin_index_of_A = (idx / (2 * effective_tab_size)) * (2 * effective_tab_size);
+			begin_index_of_B = begin_index_of_A + effective_tab_size;
+			effective_A = &temp[begin_index_of_A];
+			effective_B = &temp[begin_index_of_B];
+			relative_idx = idx % (2 * effective_tab_size);
+			diagonalKernel(begin_index_of_A + relative_idx, relative_idx, local_M,
+							effective_A, effective_B, effective_tab_size,
+							effective_tab_size, 2 * effective_tab_size);
+			idx += blockDim.x;
+		}
+		__syncthreads();
+		
+		// Copy to temp
+		if ((threadIdx.x == 0)) {
+			for (int j = 0; j < sizeM; j++) {
+				local_M[sizeM + j] = local_M[j];
+			}
+		}
+		__syncthreads();
+		temp = local_M + sizeM;
+	}
+	// Copy sorted local_M in the global M
+	if ((threadIdx.x == 0)) {
+		for (int j = 0; j < sizeM; j++) {
+			M[bidx*sizeM + j] = local_M[j];
+		}
+	}
 }
 
 double batchParallelMergeSort(int *M, int *T, const int sizeT, const int nb_tabs) {
 	int *gpuT(0), *gpuM(0);
 	int sizeM = sizeT;
 	float ExecutionTime;
+	int ntpb;
 	cudaError_t cudaStatus;
 	cudaEvent_t start, stop;			// GPU timer instructions
+	int nb_steps = log2(sizeM);			// Number of steps to perform
 
 	// Allocate GPU buffers for input array T , and sorted array M
 	testCUDA(cudaMalloc(&gpuT, sizeT * nb_tabs * sizeof(int)));
@@ -182,24 +150,24 @@ double batchParallelMergeSort(int *M, int *T, const int sizeT, const int nb_tabs
 	cudaEventCreate(&stop);
 	cudaEventRecord(start, 0);
 
-	// One block = batch size of 1 for now
-    // get number of sorting steps to perform
-    int nb_steps = log2(sizeM);
-	int i=0;
-	int *intemediate = &gpuT[0];
-    for (i=0; i<nb_steps; i++){
-        batchMergeSortKernel <<<NB, NTPB>>> (gpuM, intemediate, sizeT, sizeM, i);
-		intemediate = &gpuM[0];
-    }
-	
+	// One thread per element in the array. If T is larger than 
+	// 1024, use 1024 threads
+	if (sizeT > 1024) {
+		ntpb = 1024;
+	}
+	else {
+		ntpb = sizeT;
+	}
+
+	batchMergeSortKernel <<<nb_tabs, ntpb, 2 * sizeM * sizeof(int)>> > (gpuM, gpuT, sizeT, sizeM, nb_steps);
+   
 	// GPU Timer Instructions
-	cudaEventRecord(stop, 0);
-	cudaEventSynchronize(stop);
-	cudaEventElapsedTime(&ExecutionTime, start, stop);
-	cudaEventDestroy(start);
-	cudaEventDestroy(stop);
+	testCUDA(cudaEventRecord(stop, 0));
+	testCUDA(cudaEventSynchronize(stop));
+	testCUDA(cudaEventElapsedTime(&ExecutionTime, start, stop));
+	testCUDA(cudaEventDestroy(start));
+	testCUDA(cudaEventDestroy(stop));
 	// Copy M from GPU buffer to host memory.
-	
 	testCUDA(cudaMemcpy(M, gpuM, sizeM * nb_tabs * sizeof(int), cudaMemcpyDeviceToHost));
 	// Free GPU memory !
 	cudaFree(gpuT);
@@ -207,30 +175,6 @@ double batchParallelMergeSort(int *M, int *T, const int sizeT, const int nb_tabs
 
 	return (double) ExecutionTime;
 }
-
-// Helper function to print results
-void printSortResults(int *M, int* T, const int arraySizeT, const int nb_arrays_to_srt) {
-	int i, j;
-
-	for (i=0; i<nb_arrays_to_srt; i++)
-	{
-		printf("Tab :");
-		printArray(&(T[i*arraySizeT]), arraySizeT);
-		printf("Sorted Tab :");
-		printArray(&(M[i*arraySizeT]), arraySizeT);
-		printf("\n");
-	}
-}
-// Helper function to create arrays
-void createRandVector(int *pt, int size_T)
-{
-	for(int j = 0; j < size_T; j++)
-	{
-		pt[j] = (rand() % 200);
-	}
-}
-
-
 
 int main()
 {	
@@ -250,7 +194,12 @@ int main()
 	// create the array
 	printf("Creating %d arrays of size %d...\n", nb_arrays_to_srt, arraySizeT);
 	createRandVector(&(T[0]), nb_arrays_to_srt*arraySizeT);
-	
+	for (int i = 0; i < nb_arrays_to_srt; i++)
+	{
+		printf("Tab :");
+		printArray(&(T[i*arraySizeT]), arraySizeT);
+		printf("\n");
+	}
 
 	// Sort Array:
     // The parallelized way on CUDA
