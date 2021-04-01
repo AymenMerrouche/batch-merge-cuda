@@ -11,7 +11,7 @@
 #include "sortedArray.h"
 
 # define nb_arrays 5
-# define size_of_array 1024
+# define size_of_array 100
 
 // Function that catches the error
 void testCUDA(cudaError_t error, const char *file, int line) {
@@ -85,10 +85,9 @@ __device__ void diagonalKernel(int effective_idx, int idx, int *M, int* A, int* 
 	}
 }
 __global__ void batchMergeSortKernel(int *M, int* T, const int sizeT, const int sizeM, const int nb_steps) {
-	// Number of steps:
 	extern __shared__ int local_M[];
 
-	int idx, relative_idx, begin_index_of_A, begin_index_of_B;
+	int idx, relative_idx, begin_index_of_A, begin_index_of_B, sizeB;
 	int *effective_A, *effective_B;
 	int tidx = threadIdx.x + blockIdx.x*blockDim.x;
 	int bidx = blockIdx.x;
@@ -101,12 +100,25 @@ __global__ void batchMergeSortKernel(int *M, int* T, const int sizeT, const int 
 		while (idx < sizeM) {
 			begin_index_of_A = (idx / (2 * effective_tab_size)) * (2 * effective_tab_size);
 			begin_index_of_B = begin_index_of_A + effective_tab_size;
-			effective_A = &temp[begin_index_of_A];
-			effective_B = &temp[begin_index_of_B];
-			relative_idx = idx % (2 * effective_tab_size);
-			diagonalKernel(begin_index_of_A + relative_idx, relative_idx, local_M,
-							effective_A, effective_B, effective_tab_size,
-							effective_tab_size, 2 * effective_tab_size);
+
+			// Only if there is a paired array to merge with 
+			if (begin_index_of_B < sizeM) {
+				effective_A = &temp[begin_index_of_A];
+				effective_B = &temp[begin_index_of_B];
+				relative_idx = idx % (2 * effective_tab_size);
+				sizeB = effective_tab_size;
+				if (begin_index_of_B + effective_tab_size >= sizeM) {
+					sizeB = sizeM - begin_index_of_B;
+				}
+				diagonalKernel(begin_index_of_A + relative_idx, relative_idx, local_M,
+					effective_A, effective_B, effective_tab_size,
+					sizeB, effective_tab_size + sizeB);
+			}
+			else { // Else, stay in place
+				for (int j = begin_index_of_A; j < sizeM; j++) {
+					local_M[j] = temp[j];
+				}
+			}
 			idx += blockDim.x;
 		}
 		__syncthreads();
@@ -135,7 +147,8 @@ double batchParallelMergeSort(int *M, int *T, const int sizeT, const int nb_tabs
 	int ntpb;
 	cudaError_t cudaStatus;
 	cudaEvent_t start, stop;			// GPU timer instructions
-	int nb_steps = log2(sizeM);			// Number of steps to perform
+	int nb_steps = (int)ceil(log2(sizeM));			// Number of steps to perform
+	printf("%d steps for %d elements", nb_steps, sizeT);
 
 	// Allocate GPU buffers for input array T , and sorted array M
 	testCUDA(cudaMalloc(&gpuT, sizeT * nb_tabs * sizeof(int)));
