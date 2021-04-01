@@ -110,14 +110,12 @@ __global__ void batchMergeSortKernel(int *M, int* T, const int sizeT, const int 
 				if (begin_index_of_B + effective_tab_size >= sizeM) {
 					sizeB = sizeM - begin_index_of_B;
 				}
-				diagonalKernel(begin_index_of_A + relative_idx, relative_idx, local_M,
+				diagonalKernel(idx, relative_idx, local_M,
 					effective_A, effective_B, effective_tab_size,
 					sizeB, effective_tab_size + sizeB);
 			}
 			else { // Else, stay in place
-				for (int j = begin_index_of_A; j < sizeM; j++) {
-					local_M[j] = temp[j];
-				}
+				local_M[idx] = temp[idx];
 			}
 			idx += blockDim.x;
 		}
