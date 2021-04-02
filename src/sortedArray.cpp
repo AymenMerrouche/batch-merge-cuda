@@ -23,3 +23,11 @@ void printArray(int *pt, int arraySize) {
 	}
 	printf("}\n");
 }
+
+void createRandVector(int *pt, int size_T)
+{
+	for (int j = 0; j < size_T; j++)
+	{
+		pt[j] = (rand() % 200);
+	}
+}
